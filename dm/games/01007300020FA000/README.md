@@ -50,6 +50,7 @@ Validation on the M4 Pro:
 
 ## Found on this game
 
+- [NVN's fixed-function alpha test](../../../docs/reference/rendering.md#nvns-fixed-function-alpha-test): the death-effect tendrils' dissolve (the game animates `SetAlphaRef`); the windowless lowering and GPU test pass, and the effect is still to be watched in game.
 - [Frame-step state with a front patch area](../../../docs/reference/rewriter.md#frame-step-state-with-a-front-patch-area).
 - [PKZ version 1 archives](../../../docs/reference/shaders.md#pkz-version-1-archives).
 - [Newest GPU code version reported by the driver](../../../docs/reference/nvn-objects.md#newest-gpu-code-version-reported-by-the-driver): precompiled shader versions do not follow the linked SDK.
@@ -57,6 +58,6 @@ Validation on the M4 Pro:
 ## Open
 
 - Validate the unsigned IPA on an iPhone, including memory pressure and touch controls.
-- Trace the tutorial's cube placeholder and validate visible effects against the original game.
+- Trace the tutorial's cube placeholder and validate visible effects against the original game, including the death-effect tendrils that the alpha test should now dissolve.
 - Validate later combat input windows, camera behavior and cinematic audio/video sync with the 60 fps profile; establish sustained performance without competing workloads.
 - Later levels and Bink movies are untested.

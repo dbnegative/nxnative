@@ -775,6 +775,48 @@ def fs_uint(src):
         mask = sum(1 << int(re.search(r'color\((\d+)\)', at).group(1)) for _, nm, at in mem if nm in from_int)
     return out, mask
 
+def fs_alpha(src):
+    """NVN's fixed-function alpha test, which Metal lacks. Keep ordinary entry points unchanged; add *_at entries that discard before returning colour / depth. Buffer 1 is a per-draw
+    {uint NVNalphaFunc, float reference}; the argument buffer's resources stay at buffer 0. The alpha comes from logical colour 0 before integer-output bitcasts, blending or write masks.
+    No function constants and no per-shader replacement are needed. `[[early_fragment_tests]]` is dropped from the alpha variants alone: a fragment that discards must run before the depth
+    test, or its depth write is not suppressed. → (the source with the *_at entry points added, the reflection's entry names), or (src, {}) when there is no colour 0 to test"""
+    st = re.search(r'struct main0_out\s*\{(.*?)\};', src, re.S)
+    if not st: return src, {}
+    c0 = re.search(r'\b(float[1-4]?|half[1-4]?)\s+(\w+)\s*\[\[color\(0\)\]\]', st.group(1))
+    if not c0: return src, {}
+    alpha = f'out.{c0.group(2)}.w' if c0.group(1).endswith('4') else '1.0f'
+    helper = '''
+struct dm_alpha_test_params { uint func; float ref; };
+inline bool dm_alpha_pass(float a, constant dm_alpha_test_params& p) {
+    switch (p.func) {
+        case 1: return false;
+        case 2: return a < p.ref;
+        case 3: return a == p.ref;
+        case 4: return a <= p.ref;
+        case 5: return a > p.ref;
+        case 6: return a != p.ref;
+        case 7: return a >= p.ref;
+        default: return true; // ALWAYS (8), including the host's unset state
+    }
+}
+'''
+    extra, entries = [], {}
+    for m in re.finditer(r'(?m)^(?:\[\[early_fragment_tests\]\]\s*)?fragment\s+\w+\s+(main0(?:_[um])?)\s*\(', src):
+        name = m.group(1); begin = src.index('{', m.end()); end = begin + 1; depth = 1
+        while depth:
+            if src[end] == '{': depth += 1
+            elif src[end] == '}': depth -= 1
+            end += 1
+        sig = src[m.start():begin].replace('[[early_fragment_tests]]', '')
+        sig = re.sub(r'\b' + name + r'\s*\(', name + '_at(', sig, count=1)
+        close = sig.rfind(')'); opening = sig.index('(', sig.index(name + '_at'))
+        separator = ', ' if sig[opening + 1:close].strip() else ''
+        sig = sig[:close] + separator + 'constant dm_alpha_test_params& dm_alpha [[buffer(1)]]' + sig[close:]
+        body = re.sub(r'\breturn\b', f'if (!dm_alpha_pass({alpha}, dm_alpha)) discard_fragment();\n    return', src[begin:end])
+        extra.append(sig + body)
+        entries['entry_alpha' + ('' if name == 'main0' else name[5:])] = name + '_at'
+    return (src + helper + '\n'.join(extra), entries) if entries else (src, {})
+
 SG_OPS = {333: 'true', 334: 'pred', 335: 'pred', 336: 'true', 337: 'value', 338: 'value', 339: 'ballot', 345: 'value', 346: 'value', 347: 'value', 348: 'value'}   # OpGroupNonUniform* → its one-lane value
 SG_BUILTINS = {36: 'one', 41: 'zero', 4416: 'one4', 4417: 'one4', 4418: 'zero4', 4419: 'one4', 4420: 'zero4'}   # SubgroupSize, SubgroupLocalInvocationId, Eq / Ge / Gt / Le / Lt masks
 def spv_single_lane(path):
@@ -945,14 +987,19 @@ def finish(key, w, j, c1):
         full, lay = vs_layer_entry(full)   # layer entry points for a slice-writing geometry shader (see vs_layer_entry)
         open(msl, 'w').write(full)
     fu, fmask = fs_uint(src) if j['stage'] == 'ps' else (None, 0)   # the integer-output entry points (see fs_uint); the analysis below uses the source with only main0
+    if j['stage'] == 'ps': plain = src
     if fu: plain = src; open(msl, 'w').write(fu)
+    alpha = {}
+    if j['stage'] == 'ps':   # the alpha-test entry points (see fs_alpha), over the source with the integer outputs too: a pipeline may be both alpha-tested and integer-output
+        full, alpha = fs_alpha(fu or src)
+        if alpha: open(msl, 'w').write(full)
     def compile_targets():   # the selected targets from the same MSL (MSL identical to one compiled before takes that library, dmsh_mtlcache.py)
         if 'mac' in TARGETS: MTL.compile('mac', msl, lib)
         if 'ios' in TARGETS and IOSOUT: MTL.compile('ios', msl, os.path.join(IOSOUT, key + '_b.metallib'))
     try: compile_targets()
     except subprocess.CalledProcessError as e:
-        if not lay and not fu: return 'metal failed', str(e)[:160], None
-        open(msl, 'w').write(plain); lay = fu = None   # the layer and integer-output entry points are extras: a library that does not build with them is built without
+        if not lay and not fu and not alpha: return 'metal failed', str(e)[:160], None
+        open(msl, 'w').write(plain); lay = fu = None; alpha = {}   # the layer, integer-output and alpha-test entry points are extras: a library that does not build with them is built without (the shader then draws the untested entry point, as before)
         try: compile_targets()
         except subprocess.CalledProcessError as e: return 'metal failed', str(e)[:160], None
     clone(msl, os.path.join(out, key + '_b.metal'))
@@ -963,6 +1010,7 @@ def finish(key, w, j, c1):
             **({'entry_discard': 'main0_discard'} if discard else {}),
             **({'entry_tf': 'main0_tf', 'tf_strides': [e['stride'] if e else 0 for e in j['tf']]} if j.get('tf') else {}),
             **({'entry_layer': 'main0_l', 'entry_layer_z': 'main0_lz', 'layer_from': lay} if lay else {}), **({'entry_u': 'main0_u'} if fu else {}), **({'entry_m': 'main0_m', 'uint_mask_m': fmask} if fu and fmask else {}),
+            **alpha,
             'threadgroup_size': j.get('local'), 'c1': c1.hex(), 'notes': res['notes'] + (['not in the answer table, queries use defaults'] if j.get('no_facts') else []), 'drv_reads': dr, 'drv_unfillable': unfillable(dr),
             'bindings': reflect(key, j['stage'], src, res),
             'vertex_inputs': [{'location': int(m.group(2)), 'msl_type': m.group(1)} for m in re.finditer(r'(\w+)\s+\w+\s*\[\[attribute\((\d+)\)\]\]', src)],

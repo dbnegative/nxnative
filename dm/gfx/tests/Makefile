@@ -306,6 +306,13 @@ t_image_usage: t_image_usage.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_image_usage.m $(MTL_T_SRC) $(FW)
 t_stencil_view: t_stencil_view.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_stencil_view.m $(MTL_T_SRC) $(FW)
+# NVN's fixed-function alpha test: the generated entry points (dmsh_build.py fs_alpha) through the production draw / replay path
+t_alpha_test: t_alpha_test.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_alpha_test.m $(MTL_T_SRC) $(FW)
+.PHONY: check_t_alpha_test
+check_t_alpha_test: t_alpha_test
+	DM_TEST_ALPHA_METAL=$(CURDIR)/t_alpha_test MTL_DEBUG_LAYER=1 python3 -m unittest test_alpha_test.py
+run: check_t_alpha_test
 # The Vulkan layer (#included) over the whole NVN layer, whose device and present path it uses
 t_vk_desc: t_vk_desc.m ../vk/hle_vk.m $(MTL_T_DEP)
 	clang $(CFLAGS) -I../../third_party/vulkan-headers/include -fobjc-arc -o $@ t_vk_desc.m $(MTL_T_SRC) ../nvn/nvn_mtl.m $(FW)
